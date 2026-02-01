@@ -861,8 +861,297 @@ document.addEventListener("DOMContentLoaded", () => {
     setTimeRangeFilter,
   };
 
+  // ============ ANNOUNCEMENTS FUNCTIONALITY ============
+
+  // Announcements elements
+  const announcementsBanner = document.getElementById("announcements-banner");
+  const manageAnnouncementsButton = document.getElementById("manage-announcements-button");
+  const announcementsModal = document.getElementById("announcements-modal");
+  const closeAnnouncementsModal = document.querySelector(".close-announcements-modal");
+  const newAnnouncementForm = document.getElementById("new-announcement-form");
+  const announcementsList = document.getElementById("announcements-list");
+
+  // Fetch and display active announcements in banner
+  async function fetchAnnouncementsBanner() {
+    try {
+      const response = await fetch("/announcements");
+      
+      if (!response.ok) {
+        console.error("Failed to fetch announcements");
+        return;
+      }
+
+      const announcements = await response.json();
+      
+      if (announcements.length === 0) {
+        announcementsBanner.classList.remove("has-announcements");
+        announcementsBanner.innerHTML = "";
+        return;
+      }
+
+      announcementsBanner.classList.add("has-announcements");
+      let bannerHTML = "";
+      
+      announcements.forEach(announcement => {
+        // Get priority emoji
+        let priorityEmoji = "📢";
+        if (announcement.priority === "high") {
+          priorityEmoji = "🔴";
+        } else if (announcement.priority === "low") {
+          priorityEmoji = "💙";
+        }
+        
+        bannerHTML += `<div class="announcement-item">
+          <strong>${priorityEmoji} ${announcement.title}</strong>
+          <div>${announcement.message}</div>
+        </div>`;
+      });
+      
+      announcementsBanner.innerHTML = bannerHTML;
+    } catch (error) {
+      console.error("Error fetching announcements:", error);
+    }
+  }
+
+  // Fetch all announcements for management
+  async function fetchAllAnnouncements() {
+    try {
+      const response = await fetch(
+        `/announcements/all?username=${encodeURIComponent(currentUser.username)}`
+      );
+
+      if (!response.ok) {
+        showMessage("Failed to fetch announcements", "error");
+        return [];
+      }
+
+      const announcements = await response.json();
+      return announcements;
+    } catch (error) {
+      console.error("Error fetching announcements:", error);
+      showMessage("Error fetching announcements", "error");
+      return [];
+    }
+  }
+
+  // Display announcements list in modal
+  async function displayAnnouncementsList() {
+    const announcements = await fetchAllAnnouncements();
+    
+    if (announcements.length === 0) {
+      announcementsList.innerHTML = "<p style='text-align: center; color: var(--text-secondary);'>No announcements yet. Create one above!</p>";
+      return;
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+    
+    announcementsList.innerHTML = announcements.map(announcement => {
+      const isExpired = announcement.expiration_date < today;
+      const isPastStartDate = !announcement.start_date || announcement.start_date <= today;
+      const isActive = isPastStartDate && !isExpired;
+
+      return `
+        <div class="announcement-card ${isExpired ? 'expired' : ''}">
+          <div class="announcement-card-header">
+            <div class="announcement-card-title">${announcement.title}</div>
+            <span class="announcement-priority-badge ${announcement.priority}">${announcement.priority}</span>
+          </div>
+          <div class="announcement-card-message">${announcement.message}</div>
+          <div class="announcement-card-meta">
+            ${announcement.start_date ? `
+              <div class="announcement-date">
+                <span>📅 Starts: ${new Date(announcement.start_date).toLocaleDateString()}</span>
+              </div>
+            ` : ''}
+            <div class="announcement-date">
+              <span>🗓️ Expires: ${new Date(announcement.expiration_date).toLocaleDateString()}</span>
+            </div>
+            <div class="announcement-status ${isActive ? 'active' : 'expired'}">
+              ${isActive ? '✓ Active' : '✗ Expired'}
+            </div>
+          </div>
+          <div class="announcement-card-actions">
+            <button class="btn-edit" onclick="editAnnouncement('${announcement._id}')">Edit</button>
+            <button class="btn-danger" onclick="deleteAnnouncement('${announcement._id}')">Delete</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  // Create new announcement
+  newAnnouncementForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const title = document.getElementById("announcement-title").value;
+    const message = document.getElementById("announcement-message").value;
+    const startDate = document.getElementById("announcement-start-date").value || null;
+    const expirationDate = document.getElementById("announcement-expiration-date").value;
+    const priority = document.getElementById("announcement-priority").value;
+
+    if (!expirationDate) {
+      showMessage("Expiration date is required", "error");
+      return;
+    }
+
+    if (startDate && new Date(startDate) > new Date(expirationDate)) {
+      showMessage("Start date cannot be after expiration date", "error");
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `/announcements?title=${encodeURIComponent(title)}&message=${encodeURIComponent(message)}&expiration_date=${expirationDate}&start_date=${startDate || ''}&priority=${priority}&username=${encodeURIComponent(currentUser.username)}`,
+        {
+          method: "POST",
+        }
+      );
+
+      if (response.ok) {
+        showMessage("Announcement created successfully!", "success");
+        newAnnouncementForm.reset();
+        await displayAnnouncementsList();
+        await fetchAnnouncementsBanner();
+      } else {
+        const data = await response.json();
+        showMessage(data.detail || "Failed to create announcement", "error");
+      }
+    } catch (error) {
+      console.error("Error creating announcement:", error);
+      showMessage("Error creating announcement", "error");
+    }
+  });
+
+  // Global functions for editing and deleting announcements
+  window.editAnnouncement = async function(announcementId) {
+    const announcements = await fetchAllAnnouncements();
+    const announcement = announcements.find(a => a._id === announcementId);
+    
+    if (!announcement) {
+      showMessage("Announcement not found", "error");
+      return;
+    }
+
+    const title = prompt("Edit title:", announcement.title);
+    if (title === null) return; // User cancelled
+
+    const message = prompt("Edit message:", announcement.message);
+    if (message === null) return; // User cancelled
+
+    const startDate = prompt("Edit start date (YYYY-MM-DD, leave empty for none):", announcement.start_date || "");
+    if (startDate === null) return; // User cancelled
+
+    const expirationDate = prompt("Edit expiration date (YYYY-MM-DD):", announcement.expiration_date);
+    if (expirationDate === null) return; // User cancelled
+
+    const priority = prompt("Edit priority (low/normal/high):", announcement.priority);
+    if (priority === null) return; // User cancelled
+
+    try {
+      const params = new URLSearchParams({
+        title,
+        message,
+        expiration_date: expirationDate,
+        start_date: startDate || "",
+        priority,
+        username: currentUser.username
+      });
+
+      const response = await fetch(
+        `/announcements/${announcementId}?${params}`,
+        {
+          method: "PUT",
+        }
+      );
+
+      if (response.ok) {
+        showMessage("Announcement updated successfully!", "success");
+        await displayAnnouncementsList();
+        await fetchAnnouncementsBanner();
+      } else {
+        const data = await response.json();
+        showMessage(data.detail || "Failed to update announcement", "error");
+      }
+    } catch (error) {
+      console.error("Error updating announcement:", error);
+      showMessage("Error updating announcement", "error");
+    }
+  };
+
+  window.deleteAnnouncement = async function(announcementId) {
+    if (!confirm("Are you sure you want to delete this announcement?")) {
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `/announcements/${announcementId}?username=${encodeURIComponent(currentUser.username)}`,
+        {
+          method: "DELETE",
+        }
+      );
+
+      if (response.ok) {
+        showMessage("Announcement deleted successfully!", "success");
+        await displayAnnouncementsList();
+        await fetchAnnouncementsBanner();
+      } else {
+        const data = await response.json();
+        showMessage(data.detail || "Failed to delete announcement", "error");
+      }
+    } catch (error) {
+      console.error("Error deleting announcement:", error);
+      showMessage("Error deleting announcement", "error");
+    }
+  };
+
+  // Open announcements management modal
+  function openAnnouncementsModal() {
+    announcementsModal.classList.remove("hidden");
+    announcementsModal.classList.add("show");
+    displayAnnouncementsList();
+  }
+
+  // Close announcements modal
+  function closeAnnouncementsModalHandler() {
+    announcementsModal.classList.remove("show");
+    setTimeout(() => {
+      announcementsModal.classList.add("hidden");
+      newAnnouncementForm.reset();
+    }, 300);
+  }
+
+  // Show/hide manage announcements button based on authentication
+  function updateAnnouncementsUI() {
+    if (currentUser) {
+      manageAnnouncementsButton.classList.remove("hidden");
+    } else {
+      manageAnnouncementsButton.classList.add("hidden");
+    }
+  }
+
+  // Event listeners for announcements
+  manageAnnouncementsButton.addEventListener("click", openAnnouncementsModal);
+  closeAnnouncementsModal.addEventListener("click", closeAnnouncementsModalHandler);
+
+  // Close modal when clicking outside
+  window.addEventListener("click", (event) => {
+    if (event.target === announcementsModal) {
+      closeAnnouncementsModalHandler();
+    }
+  });
+
+  // Update announcements UI when authentication changes
+  const originalUpdateAuthUI = updateAuthUI;
+  updateAuthUI = function() {
+    originalUpdateAuthUI();
+    updateAnnouncementsUI();
+  };
+
   // Initialize app
   checkAuthentication();
   initializeFilters();
   fetchActivities();
+  fetchAnnouncementsBanner();
+  updateAnnouncementsUI();
 });
